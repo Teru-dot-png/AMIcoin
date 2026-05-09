@@ -60,17 +60,17 @@ local function hashRound(data, nonce)
               .. data
               .. PI:sub((nonce % 40) + 1, (nonce % 40) + 20)
 
-    -- Mix: sum char codes, fold with xor-like ops
+    -- Mix: FNV-1a style using CC's bit library (Lua 5.1 compatible)
     local acc = 0x811c9dc5
     for i = 1, #raw do
         local b = raw:byte(i)
-        acc = ((acc ~ b) * 0x01000193) & 0xFFFFFFFF
+        acc = bit.band(bit.bxor(acc, b) * 0x01000193, 0xFFFFFFFF)
     end
 
     -- Spread into 8 hex digits via simple LCG steps
     local result = ""
     for _ = 1, 8 do
-        acc = ((acc * 1664525) + 1013904223) & 0xFFFFFFFF
+        acc = bit.band((acc * 1664525) + 1013904223, 0xFFFFFFFF)
         result = result .. string.format("%08x", acc)
     end
     return result
