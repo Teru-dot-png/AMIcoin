@@ -8,7 +8,7 @@
 
     Protocols:
       PRIVATE_PORT    - miner traffic (ender side)
-      ROUTER_PROTOCOL - bank ↔ router traffic (wired side)
+      ROUTER_PROTOCOL - bank <-> router traffic (wired side)
 
     How it works:
       1. Miner sends a message on PRIVATE_PORT via ender modem.
@@ -22,7 +22,7 @@
 local PRIVATE_PORT    = "AMIcoin_Net"
 local ROUTER_PROTOCOL = "AMIcoin_Router"
 
--- ── Peripheral detection ────────────────────────────────────────────────────
+-- Peripheral detection
 
 local wiredSide  = nil   -- cable to bank
 local enderSides = {}    -- one or more ender / wireless modems for miners
@@ -31,10 +31,10 @@ for _, side in ipairs(peripheral.getNames()) do
     if peripheral.getType(side) == "modem" then
         local m = peripheral.wrap(side)
         if m.isWireless and not m.isWireless() then
-            -- Wired modem → bank cable
+            -- Wired modem -> bank cable
             if not wiredSide then wiredSide = side end
         else
-            -- Wireless / ender modem → miner side
+            -- Wireless / ender modem -> miner side
             table.insert(enderSides, side)
         end
     end
@@ -47,14 +47,14 @@ if #enderSides == 0 then
     error("PCrouter: No ender/wireless modems found. Attach at least one for miner connections.")
 end
 
--- ── Open all modems ──────────────────────────────────────────────────────────
+-- Open all modems
 
 rednet.open(wiredSide)
 for _, side in ipairs(enderSides) do
     rednet.open(side)
 end
 
--- ── Locate the bank on the wired network ────────────────────────────────────
+-- Locate the bank on the wired network
 
 print("PCrouter: Looking up CentralBank_Router on wired network...")
 local bankID = rednet.lookup(ROUTER_PROTOCOL, "CentralBank_Router")
@@ -63,19 +63,18 @@ if not bankID then
 end
 
 print("PCrouter ready.")
-print("  Wired side  : " .. wiredSide .. " → Bank ID " .. bankID)
+print("  Wired side  : " .. wiredSide .. " -> Bank ID " .. bankID)
 print("  Ender sides : " .. table.concat(enderSides, ", "))
-print("  Relaying    : " .. PRIVATE_PORT .. " ↔ " .. ROUTER_PROTOCOL)
+print("  Relaying    : " .. PRIVATE_PORT .. " <-> " .. ROUTER_PROTOCOL)
 
--- ── Main relay loop ──────────────────────────────────────────────────────────
+-- Main relay loop
 
 while true do
     local event, senderID, msg, protocol = os.pullEvent("rednet_message")
 
     if protocol == PRIVATE_PORT then
-        -- ── Inbound: miner → bank ──────────────────────────────────────────
-        -- Wrap the original message in a routing envelope so the bank knows
-        -- which computer originally sent it (origin_id).
+        -- Inbound: miner -> bank
+        -- Wrap in routing envelope so the bank knows the original sender.
         rednet.send(bankID, {
             type      = "routed",
             origin_id = senderID,
@@ -83,12 +82,12 @@ while true do
         }, ROUTER_PROTOCOL)
 
     elseif protocol == ROUTER_PROTOCOL then
-        -- ── Inbound: bank → miner (response) ──────────────────────────────
+        -- Inbound: bank -> miner (response)
         if type(msg) == "table"
            and msg.type      == "routed_response"
            and msg.origin_id
            and msg.payload   then
-            -- Forward the unwrapped response to the original miner
+            -- Forward unwrapped response to the original miner
             rednet.send(msg.origin_id, msg.payload, PRIVATE_PORT)
         end
     end
