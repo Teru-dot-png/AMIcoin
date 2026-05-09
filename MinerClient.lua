@@ -7,10 +7,10 @@
       [MinerClient]--cable--[MinerHub]--ender modem--//--[PCrouter]--cable--[Bank]
 
     What it does:
-      1. Runs a continuous proof-of-work loop (hashing).
-      2. When a valid hash is found, submits to the MinerHub.
-      3. The hub handles account credentials; this client is anonymous.
-      4. Waits for hub acknowledgement and respects cooldown.
+      1. Asks for your AMIcoin account ID and password.
+      2. Runs a continuous proof-of-work loop (hashing).
+      3. When a valid hash is found, submits to the MinerHub.
+      4. Hub verifies cooldown then credits your account directly.
       5. Displays live stats on screen.
 ]]
 
@@ -18,15 +18,12 @@ local PRIVATE_PORT  = "AMIcoin_Net"
 local COOLDOWN_SEC  = 62   -- slightly over 60s to avoid edge-case rejections
 local DIFFICULTY    = 4    -- number of leading zeroes required in hash
 
--- ── Identity ─────────────────────────────────────────────────────────────────
--- Credentials live on the hub; this client identifies itself by computer ID.
-local MINER_LABEL = "Miner-" .. tostring(os.getComputerID())
-
+-- Identity + credentials
 term.clear(); term.setCursorPos(1,1)
 print("=== AMIcoin Miner Client ===")
-print("ID: " .. MINER_LABEL)
-print("Credentials managed by hub.")
-sleep(1)
+term.write("Account ID : "); local ACCOUNT_ID = read()
+term.write("Password   : "); local PASSWORD   = read("*")
+local MINER_LABEL = "Miner-" .. tostring(os.getComputerID())
 
 -- ── Modem detection ───────────────────────────────────────────────────────────
 local wiredSide = nil
@@ -96,7 +93,7 @@ local function drawUI(status, hashStr)
     if term.isColor and term.isColor() then term.setTextColor(colors.yellow) end
     print("=== AMIcoin Miner Client ===")
     if term.isColor and term.isColor() then term.setTextColor(colors.white) end
-    print("Miner   : " .. MINER_LABEL)
+    print("Miner   : " .. MINER_LABEL .. " (" .. ACCOUNT_ID .. ")")
     print(string.format("Uptime  : %ds  |  Hashrate: %d H/s", elapsed, hashrate))
     print(string.format("Hashes  : %d", hashes))
     print(string.format("Accepted: %d  |  Rejected: %d", accepted, rejected))
@@ -155,9 +152,11 @@ while true do
         if found then
             drawUI("SUBMITTED", foundHash)
 
-            -- Submit to hub (no credentials needed; hub owns the account)
+            -- Submit to hub with this miner's own account credentials
             rednet.broadcast({
-                type = "mine_submit",
+                type      = "mine_submit",
+                accountID = ACCOUNT_ID,
+                password  = PASSWORD,
             }, PRIVATE_PORT)
 
             -- Wait for hub acknowledgement (up to 5s)
