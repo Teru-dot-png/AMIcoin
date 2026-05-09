@@ -1,6 +1,7 @@
 --[[
-    AMIcoin Central Bank Server (v8.2 - Protocol Separation)
+    AMIcoin Central Bank Server (v8.3 - Dual Modem Support)
     - Fix: Uses separate protocols for private/public messages.
+    - Fix: Auto-detects 2 modems; first = private, second = public.
     - Features: Transaction Logs, Receipts, Auto-modem, Mining.
 --]]
 
@@ -189,11 +190,36 @@ local function processMessage(id, msg)
     end
 end
 
-local modemFound = false
+-- Auto-detect up to 2 modems: first = private networking, second = public networking.
+-- If only 1 modem is found, it handles both roles (degraded mode).
+local privateModem, publicModem
 for _, side in ipairs(peripheral.getNames()) do
-    if peripheral.getType(side) == "modem" then rednet.open(side); modemFound = true; break end
+    if peripheral.getType(side) == "modem" then
+        if not privateModem then
+            privateModem = side
+        elseif not publicModem then
+            publicModem = side
+            break
+        end
+    end
 end
-if not modemFound then error("No Modem!") end
+
+if not privateModem then
+    error("No modem found! Attach at least one modem for private networking.")
+end
+
+rednet.open(privateModem)
+print("Private modem: " .. privateModem)
+
+if publicModem then
+    rednet.open(publicModem)
+    print("Public modem:  " .. publicModem)
+else
+    -- Fall back to shared modem; public broadcasts go over the same modem
+    publicModem = privateModem
+    print("WARNING: Only 1 modem found. Public and private traffic share " .. privateModem)
+end
+
 rednet.host(PRIVATE_PORT, "CentralBank")
 
 while true do
