@@ -28,14 +28,13 @@ local PRIVATE_PORT  = "AMIcoin_Net"
 local COOLDOWN_MS   = 60000   -- 60 seconds between credits per miner
 local PING_INTERVAL = 10      -- seconds between keepalive pings to bank
 
--- ── Hub identity ─────────────────────────────────────────────────────────────
--- Prompted at startup; used as fallback when a miner doesn't supply its own.
+-- Hub identity
 local HUB_NAME = "MinerHub"
 
 term.clear(); term.setCursorPos(1,1)
 print("=== AMIcoin Miner Hub ===")
-term.write("Account ID : "); local HUB_ACCOUNT_ID = read()
-term.write("Password   : "); local HUB_PASSWORD   = read("*")
+print("Starting up...")
+sleep(1)
 
 -- ── State ─────────────────────────────────────────────────────────────────────
 -- [minerComputerID] = epoch-ms of last accepted submission
@@ -119,20 +118,27 @@ while true do
                 -- ── Cooldown cleared: accept and relay to bank ─────────────
                 minerCooldowns[senderID] = now
 
-                -- Use miner's own account if provided, else hub fallback
-                local accountID = (msg.accountID ~= nil and msg.accountID ~= "")
-                                  and msg.accountID or HUB_ACCOUNT_ID
-                local password  = (msg.password  ~= nil and msg.password  ~= "")
-                                  and msg.password  or HUB_PASSWORD
+                -- Forward miner's own credentials to the bank
+                local accountID = msg.accountID or ""
+                local password  = msg.password  or ""
 
-                forwardToBank(accountID, password)
-                rednet.send(senderID, {
-                    type    = "mine_ack",
-                    success = true,
-                    next_in = 0,
-                }, PRIVATE_PORT)
-
-                statusLine(senderID, true, 0)
+                if accountID == "" then
+                    -- No credentials supplied; reject
+                    rednet.send(senderID, {
+                        type    = "mine_ack",
+                        success = false,
+                        next_in = 0,
+                    }, PRIVATE_PORT)
+                    print(string.format("[%s] Miner #%d -> REJECTED (no credentials)", os.date("%H:%M:%S"), senderID))
+                else
+                    forwardToBank(accountID, password)
+                    rednet.send(senderID, {
+                        type    = "mine_ack",
+                        success = true,
+                        next_in = 0,
+                    }, PRIVATE_PORT)
+                    statusLine(senderID, true, 0)
+                end
 
             else
                 -- ── Still on cooldown ──────────────────────────────────────
