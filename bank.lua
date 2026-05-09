@@ -6,8 +6,9 @@
 --]]
 
 local MASTER_PASSWORD = "SomemoreIsNeverEnough"
-local PRIVATE_PORT = "AMIcoin_Net"     -- For Pad/Phone communication
-local PUBLIC_PORT = "AMIcoin_Public"   -- For Displays/Printers
+local PRIVATE_PORT   = "AMIcoin_Net"     -- For Pad/Phone communication
+local PUBLIC_PORT   = "AMIcoin_Public"  -- For Displays/Printers
+local ROUTER_PROTOCOL = "AMIcoin_Router" -- For wired PCrouter relay
 local ACCOUNTS_DIR = "accounts/"
 local STATS_FILE = "bank_stats.json"
 local LOG_FILE = "transactions.json"
@@ -190,22 +191,85 @@ local function processMessage(id, msg)
     end
 end
 
--- Auto-detect up to 2 modems: first = private networking, second = public networking.
+-- ============================================================
+-- Routed message handler: processes messages forwarded by PCrouter
+-- on behalf of far-away miners connected via ender modems.
+-- routerID  = computer ID of the PCrouter
+-- originID  = computer ID of the original sender (miner/hub)
+-- msg       = the original message payload
+-- ============================================================
+local function processRoutedMessage(routerID, originID, msg)
+    if type(msg) ~= "table" then return end
+
+    local function reply(response)
+        rednet.send(routerID, {type="routed_response", origin_id=originID, payload=response}, ROUTER_PROTOCOL)
+    end
+
+    if msg.type == "ping" then
+        activeMiners[originID] = { name = msg.name or "RouterMiner", lastSeen = os.epoch("utc") }
+
+    elseif msg.type == "mine_submit" then
+        local acc = getAccount(msg.accountID)
+        if acc then
+            acc.balance = acc.balance + 0.00001
+            acc.mined_total = (acc.mined_total or 0) + 0.00001
+            saveAccount(acc)
+        end
+
+    elseif msg.type == "login" then
+        local acc = getAccount(msg.accountID)
+        if acc and acc.password == msg.password then
+            reply({type="res", success=true, name=acc.name})
+        else
+            reply({type="res", success=false, error="Invalid Auth"})
+        end
+
+    elseif msg.type == "get_balance" then
+        local acc = getAccount(msg.accountID)
+        if acc and acc.password == msg.password then
+            reply({type="res", balance=acc.balance})
+        else
+            reply({type="res", success=false, error="Invalid Auth"})
+        end
+
+    elseif msg.type == "transfer" then
+        local sender   = getAccount(msg.accountID)
+        local receiver = getAccount(msg.toID)
+        if sender and receiver and sender.password == msg.password and sender.balance >= msg.amount then
+            sender.balance   = sender.balance   - msg.amount
+            receiver.balance = receiver.balance + msg.amount
+            saveAccount(sender); saveAccount(receiver)
+            reply({type="res", success=true})
+            addLog("TRANSFER", {from=sender.name, to=receiver.name, amount=msg.amount})
+        else
+            reply({type="res", success=false, error="Transfer Failed"})
+        end
+    end
+end
+
+-- Auto-detect up to 2 wireless modems: first = private, second = public.
 -- If only 1 modem is found, it handles both roles (degraded mode).
-local privateModem, publicModem
+-- Also detects a wired modem on the bottom for PCrouter relay.
+local privateModem, publicModem, wiredRouterModem
 for _, side in ipairs(peripheral.getNames()) do
     if peripheral.getType(side) == "modem" then
-        if not privateModem then
-            privateModem = side
-        elseif not publicModem then
-            publicModem = side
-            break
+        local m = peripheral.wrap(side)
+        -- Wired modem on bottom is reserved for the PCrouter cable connection
+        if side == "bottom" and m.isWireless and not m.isWireless() then
+            wiredRouterModem = side
+        elseif m.isWireless and m.isWireless() then
+            if not privateModem then
+                privateModem = side
+            elseif not publicModem then
+                publicModem = side
+                break
+            end
         end
     end
 end
 
 if not privateModem then
-    error("No modem found! Attach at least one modem for private networking.")
+    error("No wireless modem found! Attach at least one wireless modem for private networking.")
 end
 
 rednet.open(privateModem)
@@ -215,9 +279,17 @@ if publicModem then
     rednet.open(publicModem)
     print("Public modem:  " .. publicModem)
 else
-    -- Fall back to shared modem; public broadcasts go over the same modem
     publicModem = privateModem
-    print("WARNING: Only 1 modem found. Public and private traffic share " .. privateModem)
+    print("WARNING: Only 1 wireless modem found. Public and private traffic share " .. privateModem)
+end
+
+-- Open wired modem (bottom) for PCrouter relay if present
+if wiredRouterModem then
+    rednet.open(wiredRouterModem)
+    rednet.host(ROUTER_PROTOCOL, "CentralBank_Router")
+    print("Wired router modem: " .. wiredRouterModem .. " (PCrouter relay active)")
+else
+    print("INFO: No wired modem on bottom - PCrouter relay disabled.")
 end
 
 rednet.host(PRIVATE_PORT, "CentralBank")
@@ -230,6 +302,11 @@ while true do
     local event, p1, p2, p3 = os.pullEvent()
     if event == "rednet_message" and p3 == PRIVATE_PORT then
         processMessage(p1, p2)
+    elseif event == "rednet_message" and p3 == ROUTER_PROTOCOL then
+        -- Message forwarded by PCrouter from a far-away miner
+        if type(p2) == "table" and p2.type == "routed" and p2.origin_id and p2.payload then
+            processRoutedMessage(p1, p2.origin_id, p2.payload)
+        end
     elseif event == "key" then
         if p1 == keys.m then
             term.setCursorPos(1,10); term.write("Pass: "); if read("*") == MASTER_PASSWORD then
