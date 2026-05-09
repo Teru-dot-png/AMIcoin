@@ -4,7 +4,7 @@
     - Prints physical receipts if a printer is attached.
 --]]
 
-local PORT = "AMIcoin_Net"
+local PORT = "AMIcoin_Public"
 local modemSide = nil
 
 -- Detect Modem
