@@ -1,30 +1,34 @@
 --[[
-    AMIcoin Miner Hub (v1.0)
+    AMIcoin Miner Hub (v2.0 - Pad Relay Update)
     Central hub for a cluster of wired-modem-connected miner computers.
-    Miners do crypto-style proof-of-work locally and submit to this hub.
+    Also acts as a relay for AMIcoin Pad (ender pocket computers).
 
     Physical setup:
       [Miner1]--cable--\
-      [Miner2]--cable---[MinerHub]--ender modem--//--[PCrouter]--cable--[Bank]
+      [Miner2]--cable---[MinerHub]--ender modem--//--[Bank]
       [Miner3]--cable--/
+      [PadUser]--------ender------//--[MinerHub]
 
     How it works:
       • Each miner computer submits a "mine_submit" over the wired network.
       • The hub enforces a 60-second cooldown per individual miner computer ID.
-      • Approved submissions are forwarded to the bank via the ender modem
-        (through PCrouter if needed).
-      • The hub sends periodic pings so the bank shows it as online.
+      • Approved mine submissions are forwarded to the bank via the ender modem.
+      • Pad computers (AMIcoin Pad) connect via ender on PAD_PORT.
+      • All pad requests (login, balance, transfer, mining) are relayed to the bank.
 
-    ── Miner-side protocol ───────────────────────────────────────────────────
-    Miner  → Hub  :  { type="mine_submit", accountID="...", password="..." }
+    ── Miner-side protocol (wired) ──────────────────────────────────────────
+    Miner  → Hub  :  { type="mine_submit", accountID="...", mine_token="..." }
     Hub    → Miner:  { type="mine_ack", success=true/false, next_in=<seconds> }
 
-    ── Hub → Bank protocol ───────────────────────────────────────────────────
-    Hub broadcasts { type="mine_submit", accountID="...", password="..." }
-    on PRIVATE_PORT via the ender modem so PCrouter relays it to the bank.
+    ── Pad-side protocol (ender) ────────────────────────────────────────────
+    Pad    → Hub  :  any AMIcoin message (login, get_balance, transfer, mine_submit)
+    Hub    → Bank :  same message, forwarded on PRIVATE_PORT
+    Bank   → Hub  :  response
+    Hub    → Pad  :  response forwarded back on PAD_PORT
 ]]
 
 local PRIVATE_PORT  = "AMIcoin_Net"
+local PAD_PORT      = "AMIcoin_Pad"
 local COOLDOWN_MS   = 60000   -- 60 seconds between credits per miner
 local PING_INTERVAL = 10      -- seconds between keepalive pings to bank
 
@@ -66,10 +70,21 @@ end
 rednet.open(wiredSide)
 rednet.open(enderSide)
 
+-- ── Locate bank ───────────────────────────────────────────────────────────────
+print("Looking up CentralBank...")
+local bankID = rednet.lookup(PRIVATE_PORT, "CentralBank")
+if not bankID then
+    print("WARNING: Bank not found. Pad relay will be unavailable until bank is online.")
+end
+
+-- Host hub name so pads can find us via rednet.lookup
+rednet.host(PAD_PORT, HUB_NAME)
+
 print("AMIcoin Miner Hub running")
 print("  Wired (miners) : " .. wiredSide)
-print("  Ender (bank)   : " .. enderSide)
+print("  Ender (bank+pads): " .. enderSide)
 print("  Cooldown       : " .. (COOLDOWN_MS / 1000) .. "s per miner")
+print("  Bank ID        : " .. tostring(bankID))
 print("")
 
 -- ── Helpers ───────────────────────────────────────────────────────────────────
@@ -78,11 +93,12 @@ local function sendPing()
     rednet.broadcast({type = "ping", name = HUB_NAME}, PRIVATE_PORT)
 end
 
-local function forwardToBank(accountID, mine_token)
+local function forwardToBank(accountID, mine_token, miner_label)
     rednet.broadcast({
-        type       = "mine_submit",
-        accountID  = accountID,
-        mine_token = mine_token,
+        type        = "mine_submit",
+        accountID   = accountID,
+        mine_token  = mine_token,
+        miner_label = miner_label,
     }, PRIVATE_PORT)
 end
 
@@ -131,7 +147,8 @@ while true do
                     }, PRIVATE_PORT)
                     print(string.format("[%s] Miner #%d -> REJECTED (no credentials)", os.date("%H:%M:%S"), senderID))
                 else
-                    forwardToBank(accountID, msg.mine_token or "")
+                    local miner_label = msg.miner_label or ("Miner-" .. tostring(senderID))
+                forwardToBank(accountID, msg.mine_token or "", miner_label)
                     rednet.send(senderID, {
                         type    = "mine_ack",
                         success = true,
@@ -151,6 +168,45 @@ while true do
 
                 statusLine(senderID, false, remaining)
             end
+        end
+
+    -- ── Message from a pad (ender side) ──────────────────────────────────────
+    elseif event == "rednet_message" and p3 == PAD_PORT then
+        local padID = p1
+        local msg   = p2
+        if type(msg) ~= "table" then
+            -- ignore malformed
+        elseif msg.type == "ping" then
+            -- Forward keepalive to bank so the monitor shows the pad as online.
+            if bankID then rednet.send(bankID, msg, PRIVATE_PORT) end
+        elseif not bankID then
+            -- Bank not yet found; try a fresh lookup then report offline.
+            bankID = rednet.lookup(PRIVATE_PORT, "CentralBank")
+            rednet.send(padID, {type="res", success=false, error="Bank offline"}, PAD_PORT)
+        else
+            -- Relay request to bank, wait for its response, forward back to pad.
+            -- The inner pullEvent loop filters by bankID so miner messages on
+            -- PRIVATE_PORT are not accidentally consumed during the wait.
+            rednet.send(bankID, msg, PRIVATE_PORT)
+            local resp = nil
+            local relayTimer = os.startTimer(3)
+            while not resp do
+                local ev, a, b, c = os.pullEvent()
+                if ev == "rednet_message" and a == bankID and c == PRIVATE_PORT then
+                    resp = b
+                elseif ev == "timer" and a == relayTimer then
+                    break
+                end
+            end
+            if resp then
+                rednet.send(padID, resp, PAD_PORT)
+            else
+                local fallback = (msg.type == "mine_submit")
+                    and {type="mine_ack", success=false, error="Bank timeout"}
+                    or  {type="res",      success=false, error="Bank timeout"}
+                rednet.send(padID, fallback, PAD_PORT)
+            end
+            print(string.format("[%s] Pad #%d -> %s", os.date("%H:%M:%S"), padID, msg.type or "?"))
         end
     end
 end

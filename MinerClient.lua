@@ -172,9 +172,10 @@ while true do
 
             -- Submit to hub; token proves identity without exposing the password.
             rednet.broadcast({
-                type       = "mine_submit",
-                accountID  = ACCOUNT_ID,
-                mine_token = mineToken(),
+                type        = "mine_submit",
+                accountID   = ACCOUNT_ID,
+                mine_token  = mineToken(),
+                miner_label = MINER_LABEL,
             }, PRIVATE_PORT)
 
             -- Wait for hub acknowledgement (up to 5s)

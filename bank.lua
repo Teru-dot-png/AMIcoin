@@ -286,6 +286,9 @@ local function handleMessage(senderID, msg, reply)
         acc.mined_total = (acc.mined_total or 0) + MINE_REWARD
         saveAccount(acc)
         addLog("MINE", { account = acc.name, amount = MINE_REWARD })
+        -- Register this individual miner as online so the monitor shows each player.
+        local label = msg.miner_label or ("Miner-" .. tostring(senderID))
+        activeMiners[label] = { name = label, lastSeen = os.epoch("utc") }
         reply({ type = "mine_ack", success = true })
 
     elseif msg.type == "login" then

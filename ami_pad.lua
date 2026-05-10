@@ -1,12 +1,11 @@
 --[[
-    AMIcoin Client Pad (v5.0 - Security Update)
-    - Security: Passwords hashed (FNV-1a) before transmission; never sent in plaintext.
-    - Security: Mining uses a time-based token instead of a password.
-    - Fix: Separate Private/Public protocol handling.
-    - Improved timeout for slower server hardware.
+    AMIcoin Client Pad (v6.0 - Hub Relay Update)
+    - Connects to MinerHub via ender modem instead of Bank directly.
+    - Hub relays all requests to the bank and returns responses.
+    - Mining goes through hub for proper cooldown enforcement.
 --]]
 
-local PRIVATE_PORT    = "AMIcoin_Net"
+local PAD_PORT        = "AMIcoin_Pad"
 local TOKEN_WINDOW_MS = 300000  -- must match bank.lua TOKEN_WINDOW_MS
 local modemSide = nil
 
@@ -25,15 +24,15 @@ local function fnv1a(str)
     return string.format("%08x", acc)
 end
 
-local function findBank()
-    term.clear(); term.setCursorPos(1,1); print("Connecting to AMIbank...")
-    local id = rednet.lookup(PRIVATE_PORT, "CentralBank")
+local function findHub()
+    term.clear(); term.setCursorPos(1,1); print("Connecting to MinerHub...")
+    local id = rednet.lookup(PAD_PORT, "MinerHub")
     if not id then sleep(2); return nil end
     return id
 end
 
-local bankID = findBank()
-while not bankID do bankID = findBank() end
+local hubID = findHub()
+while not hubID do hubID = findHub() end
 
 local session = { accountID = nil, pw_hash = nil, name = nil }
 
@@ -45,8 +44,8 @@ end
 
 local function login()
     drawHeader(); print("\n[LOGIN]"); write("AccountID: "); local id = read(); write("Password: "); local pw_hash = fnv1a(read("*"))
-    rednet.send(bankID, {type="login", accountID=id, pw_hash=pw_hash}, PRIVATE_PORT)
-    local _, res = rednet.receive(PRIVATE_PORT, 5)
+    rednet.send(hubID, {type="login", accountID=id, pw_hash=pw_hash}, PAD_PORT)
+    local _, res = rednet.receive(PAD_PORT, 5)
     if res and res.success then
         session.accountID = id; session.pw_hash = pw_hash; session.name = res.name; return true
     else
@@ -55,8 +54,8 @@ local function login()
 end
 
 local function getBalance()
-    rednet.send(bankID, {type="get_balance", accountID=session.accountID, pw_hash=session.pw_hash}, PRIVATE_PORT)
-    local _, res = rednet.receive(PRIVATE_PORT, 5)
+    rednet.send(hubID, {type="get_balance", accountID=session.accountID, pw_hash=session.pw_hash}, PAD_PORT)
+    local _, res = rednet.receive(PAD_PORT, 5)
     return res and string.format("%.6f", res.balance) or "Error"
 end
 
@@ -73,23 +72,29 @@ while true do
         local _, char = os.pullEvent("char")
         if char == "1" then
             print("\nTo ID: "); local target = read(); print("Amount: "); local amt = tonumber(read())
-            rednet.send(bankID, {type="transfer", accountID=session.accountID, pw_hash=session.pw_hash, toID=target, amount=amt}, PRIVATE_PORT)
-            local _, res = rednet.receive(PRIVATE_PORT, 5)
+            rednet.send(hubID, {type="transfer", accountID=session.accountID, pw_hash=session.pw_hash, toID=target, amount=amt}, PAD_PORT)
+            local _, res = rednet.receive(PAD_PORT, 5)
             print(res and res.success and "Verified!" or "Failed: "..(res and res.error or "Timeout"))
             sleep(2)
         elseif char == "2" then
             print("\nMining... reward: 0.01 AMI"); local lastPing = 0
             while true do
                 if os.epoch("utc") - lastPing > 5000 then
-                    rednet.send(bankID, {type="ping", accountID=session.accountID, name=session.name}, PRIVATE_PORT)
+                    rednet.send(hubID, {type="ping", accountID=session.accountID, name=session.name}, PAD_PORT)
                     lastPing = os.epoch("utc")
                 end
                 if math.random(1, 1000) == 500 then
-                    rednet.send(bankID, {type="mine_submit", accountID=session.accountID, mine_token=mineToken()}, PRIVATE_PORT)
-                    print(" +0.01 AMI (Block Found)")
-                    for i = 60, 1, -1 do
-                        if i % 5 == 0 then rednet.send(bankID, {type="ping", accountID=session.accountID, name=session.name}, PRIVATE_PORT) end
-                        sleep(1)
+                    local label = "Pad-" .. tostring(os.getComputerID())
+                    rednet.send(hubID, {type="mine_submit", accountID=session.accountID, mine_token=mineToken(), miner_label=label}, PAD_PORT)
+                    local _, ack = rednet.receive(PAD_PORT, 5)
+                    if ack and ack.success then
+                        print(" +0.01 AMI (Block Found)")
+                        sleep(60)
+                    elseif ack and ack.next_in then
+                        print(" Cooldown: " .. ack.next_in .. "s")
+                        sleep(math.min(ack.next_in, 60))
+                    else
+                        print(" No response from hub")
                     end
                 end
                 sleep(0.1)
