@@ -29,11 +29,38 @@ local function fnv1a(str)
     return string.format("%08x", acc)
 end
 
--- Identity + credentials
+-- ── Session persistence ───────────────────────────────────────────────────────
+local SESSION_FILE = "miner_session.json"
+
+local function saveSession(id, hash)
+    local f = fs.open(SESSION_FILE, "w")
+    f.write(textutils.serializeJSON({ accountID = id, pw_hash = hash }))
+    f.close()
+end
+
+local function loadSession()
+    if not fs.exists(SESSION_FILE) then return nil end
+    local f    = fs.open(SESSION_FILE, "r")
+    local data = textutils.unserializeJSON(f.readAll())
+    f.close()
+    return data
+end
+
+-- ── Identity + credentials ────────────────────────────────────────────────────
 term.clear(); term.setCursorPos(1,1)
 print("=== AMIcoin Miner Client ===")
-term.write("Account ID : "); local ACCOUNT_ID = read()
-term.write("Password   : "); local PW_HASH    = fnv1a(read("*"))
+local ACCOUNT_ID, PW_HASH
+local saved = loadSession()
+if saved and saved.accountID and saved.pw_hash then
+    ACCOUNT_ID = saved.accountID
+    PW_HASH    = saved.pw_hash
+    print("Resumed session for account: " .. ACCOUNT_ID)
+    sleep(1)
+else
+    term.write("Account ID : "); ACCOUNT_ID = read()
+    term.write("Password   : "); PW_HASH    = fnv1a(read("*"))
+    saveSession(ACCOUNT_ID, PW_HASH)
+end
 local MINER_LABEL = "Miner-" .. tostring(os.getComputerID())
 
 -- Generates a time-based mine token (no raw password ever sent over network).
