@@ -14,16 +14,34 @@
       5. Displays live stats on screen.
 ]]
 
-local PRIVATE_PORT  = "AMIcoin_Net"
-local COOLDOWN_SEC  = 62   -- slightly over 60s to avoid edge-case rejections
-local DIFFICULTY    = 4    -- number of leading zeroes required in hash
+local PRIVATE_PORT    = "AMIcoin_Net"
+local COOLDOWN_SEC    = 62      -- slightly over 60s to avoid edge-case rejections
+local DIFFICULTY      = 4       -- number of leading zeroes required in hash
+local TOKEN_WINDOW_MS = 300000  -- must match bank.lua TOKEN_WINDOW_MS
+
+-- ── Crypto: FNV-1a hash (Lua 5.1 / CC:Tweaked compatible) ────────────────────
+local function fnv1a(str)
+    local acc = 0x811c9dc5
+    for i = 1, #str do
+        local b = str:byte(i)
+        acc = bit.band(bit.bxor(acc, b) * 0x01000193, 0xFFFFFFFF)
+    end
+    return string.format("%08x", acc)
+end
 
 -- Identity + credentials
 term.clear(); term.setCursorPos(1,1)
 print("=== AMIcoin Miner Client ===")
 term.write("Account ID : "); local ACCOUNT_ID = read()
-term.write("Password   : "); local PASSWORD   = read("*")
+term.write("Password   : "); local PW_HASH    = fnv1a(read("*"))
 local MINER_LABEL = "Miner-" .. tostring(os.getComputerID())
+
+-- Generates a time-based mine token (no raw password ever sent over network).
+-- Token = fnv1a(pw_hash .. accountID .. bucket) where bucket = floor(epoch/TOKEN_WINDOW_MS).
+local function mineToken()
+    local bucket = math.floor(os.epoch("utc") / TOKEN_WINDOW_MS)
+    return fnv1a(PW_HASH .. tostring(ACCOUNT_ID) .. tostring(bucket))
+end
 
 -- ── Modem detection ───────────────────────────────────────────────────────────
 local wiredSide = nil
@@ -152,11 +170,11 @@ while true do
         if found then
             drawUI("SUBMITTED", foundHash)
 
-            -- Submit to hub with this miner's own account credentials
+            -- Submit to hub; token proves identity without exposing the password.
             rednet.broadcast({
-                type      = "mine_submit",
-                accountID = ACCOUNT_ID,
-                password  = PASSWORD,
+                type       = "mine_submit",
+                accountID  = ACCOUNT_ID,
+                mine_token = mineToken(),
             }, PRIVATE_PORT)
 
             -- Wait for hub acknowledgement (up to 5s)

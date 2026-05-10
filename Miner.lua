@@ -78,11 +78,11 @@ local function sendPing()
     rednet.broadcast({type = "ping", name = HUB_NAME}, PRIVATE_PORT)
 end
 
-local function forwardToBank(accountID, password)
+local function forwardToBank(accountID, mine_token)
     rednet.broadcast({
-        type      = "mine_submit",
-        accountID = accountID,
-        password  = password,
+        type       = "mine_submit",
+        accountID  = accountID,
+        mine_token = mine_token,
     }, PRIVATE_PORT)
 end
 
@@ -118,9 +118,9 @@ while true do
                 -- ── Cooldown cleared: accept and relay to bank ─────────────
                 minerCooldowns[senderID] = now
 
-                -- Forward miner's own credentials to the bank
-                local accountID = msg.accountID or ""
-                local password  = msg.password  or ""
+                -- Forward miner's credentials to the bank
+                local accountID  = msg.accountID  or ""
+                local mine_token = msg.mine_token  or ""
 
                 if accountID == "" then
                     -- No credentials supplied; reject
@@ -131,7 +131,7 @@ while true do
                     }, PRIVATE_PORT)
                     print(string.format("[%s] Miner #%d -> REJECTED (no credentials)", os.date("%H:%M:%S"), senderID))
                 else
-                    forwardToBank(accountID, password)
+                    forwardToBank(accountID, msg.mine_token or "")
                     rednet.send(senderID, {
                         type    = "mine_ack",
                         success = true,
